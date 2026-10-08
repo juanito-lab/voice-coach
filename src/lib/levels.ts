@@ -8,8 +8,11 @@ export const ENERGY_BANDS: Record<Energy, [number, number]> = {
 }
 /** RMS within this many dB below the band's floor counts as "approaching". */
 export const APPROACH_DB = 4
-/** Sample peaks above this flash red. */
-export const PEAK_RED_DB = -6
+/**
+ * Sample peaks above this turn the signal red. Unprocessed speech peaks sit ~12–18 dB
+ * above its RMS, so −6 would flash on every good take; −3 keeps red meaning "near clipping".
+ */
+export const PEAK_RED_DB = -3
 /** Sample peaks at or above this count as clipped. */
 export const CLIP_DB = -1
 export const FLOOR_DB = -100

@@ -27,6 +27,20 @@ function send(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body))
 }
 
+/** Dev-only: the page posts take diagnostics here so they show up in the dev-server log. */
+function takeLog(): Plugin {
+  return {
+    name: 'take-log',
+    configureServer(server) {
+      server.middlewares.use('/api/take-log', async (req, res) => {
+        if (req.method === 'POST') console.log(`[take-log] ${await readBody(req)}`)
+        res.statusCode = 204
+        res.end()
+      })
+    },
+  }
+}
+
 /** Dev-server proxy so ANTHROPIC_API_KEY stays on the server and never reaches the browser bundle. */
 function claudeDirector(apiKey: string | undefined): Plugin {
   return {
@@ -73,6 +87,6 @@ export default defineConfig(({ mode }) => {
   // Empty prefix loads every var, but only into this Node process — nothing is exposed to client code.
   const env = loadEnv(mode, process.cwd(), '')
   return {
-    plugins: [react(), claudeDirector(env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY)],
+    plugins: [react(), takeLog(), claudeDirector(env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY)],
   }
 })

@@ -12,18 +12,18 @@ import {
   statusWord,
   type Zone,
 } from '../lib/levels'
+import type { Frame } from '../lib/levelcheck'
 import type { Energy } from '../lib/types'
 import { encodeWav } from '../lib/wav'
 
+export type { Frame }
 export type SourceKind = 'mic' | 'tone-30' | 'tone-16' | 'tone-3' | 'file'
 
 /** DOM targets the engine paints directly, bypassing React. */
 export interface MeterTargets {
-  meter: HTMLCanvasElement | null
-  history: HTMLCanvasElement | null
-  readout: HTMLElement | null
-  status: HTMLElement | null
-  peak: HTMLElement | null
+  meter?: HTMLCanvasElement | null
+  readout?: HTMLElement | null
+  status?: HTMLElement | null
 }
 
 export interface TakeStats {
@@ -36,7 +36,6 @@ export interface TakeStats {
 
 const SMOOTH_MS = 300
 const PEAK_HOLD_MS = 1500
-const HISTORY_MS = 10000
 const DB_MIN = -60
 const DEFAULT_FLOOR = -60
 const SILENCE_MARGIN_DB = 6
@@ -51,10 +50,14 @@ const ZONE_COLOR: Record<Zone, string> = {
 
 export class AudioEngine {
   ctx: AudioContext | null = null
-  targets: MeterTargets = { meter: null, history: null, readout: null, status: null, peak: null }
+  targets: MeterTargets = {}
+  /** Noise floor in dBFS, measured after gain. */
   noiseFloor: number | null = null
+  /** Digital input gain in dB, set by the level check. */
+  gainDb = 0
 
   private analyser: AnalyserNode | null = null
+  private gain: GainNode | null = null
   private dest: MediaStreamAudioDestinationNode | null = null
   private sourceNode: AudioNode | null = null
   private micStream: MediaStream | null = null
@@ -67,12 +70,10 @@ export class AudioEngine {
   private holdDb = -100
   private holdT = 0
   private band: [number, number] = ENERGY_BANDS.normal
-  private history: { t: number; db: number }[] = []
   private lastReadout = ''
   private lastStatus = ''
-  private lastPeak = ''
 
-  private calib: { until: number; sum: number; frames: number; resolve: (db: number) => void } | null = null
+  private collector: { until: number; frames: Frame[]; resolve: (frames: Frame[]) => void } | null = null
 
   private recorder: MediaRecorder | null = null
   private chunks: Blob[] = []
@@ -90,6 +91,11 @@ export class AudioEngine {
     this.analyser.smoothingTimeConstant = 0
     this.buf = new Float32Array(this.analyser.fftSize)
     this.dest = this.ctx.createMediaStreamDestination()
+    // source → gain → analyser + recorder
+    this.gain = this.ctx.createGain()
+    this.gain.gain.value = Math.pow(10, this.gainDb / 20)
+    this.gain.connect(this.analyser)
+    this.gain.connect(this.dest)
     // Keep the analyser pulled by the graph without making any sound.
     const mute = this.ctx.createGain()
     mute.gain.value = 0
@@ -127,8 +133,7 @@ export class AudioEngine {
       osc.start()
       node = gain
     }
-    node.connect(this.analyser!)
-    node.connect(this.dest!)
+    node.connect(this.gain!)
     this.sourceNode = node
   }
 
@@ -139,8 +144,20 @@ export class AudioEngine {
     this.micStream = null
   }
 
+  setNoiseFloor(db: number | null) {
+    this.noiseFloor = db
+  }
+
+  setGainDb(db: number) {
+    this.gainDb = db
+    if (this.gain) this.gain.gain.value = Math.pow(10, db / 20)
+  }
+
   setTargets(t: MeterTargets) {
     this.targets = t
+    // New elements: force the next frame to repaint text.
+    this.lastReadout = ''
+    this.lastStatus = ''
   }
 
   setBand(energy: Energy) {
@@ -155,18 +172,15 @@ export class AudioEngine {
     return this.rmsDb
   }
 
-  /** Average 3 s of input power to measure the room's noise floor. */
-  calibrate(ms = 3000): Promise<number> {
+  /** True when the smoothed level is clearly above the noise floor. */
+  get speaking(): boolean {
+    return this.rmsDb > (this.noiseFloor ?? DEFAULT_FLOOR) + SILENCE_MARGIN_DB
+  }
+
+  /** Collect per-frame power and peak (at the current gain) for `ms`. */
+  collect(ms: number): Promise<Frame[]> {
     return new Promise((resolve) => {
-      this.calib = {
-        until: performance.now() + ms,
-        sum: 0,
-        frames: 0,
-        resolve: (db) => {
-          this.noiseFloor = db
-          resolve(db)
-        },
-      }
+      this.collector = { until: performance.now() + ms, frames: [], resolve }
     })
   }
 
@@ -236,18 +250,14 @@ export class AudioEngine {
       this.holdDb = this.framePeakDb
       this.holdT = t
     }
-    this.history.push({ t, db: this.rmsDb })
-    while (this.history.length && t - this.history[0].t > HISTORY_MS) this.history.shift()
-
     const zone = classify(this.rmsDb, this.framePeakDb, this.band)
 
-    if (this.calib) {
-      this.calib.sum += ms
-      this.calib.frames++
-      if (t >= this.calib.until) {
-        const c = this.calib
-        this.calib = null
-        c.resolve(powerToDb(c.sum / Math.max(1, c.frames)))
+    if (this.collector) {
+      this.collector.frames.push({ ms, peak: peakAbs(this.buf) })
+      if (t >= this.collector.until) {
+        const c = this.collector
+        this.collector = null
+        c.resolve(c.frames)
       }
     }
 
@@ -264,11 +274,11 @@ export class AudioEngine {
       this.stats.clipping = clipping
     }
 
-    this.paint(zone, t)
+    this.paint(zone)
   }
 
-  private paint(zone: Zone, t: number) {
-    const { readout, status, peak, meter, history } = this.targets
+  private paint(zone: Zone) {
+    const { readout, status, meter } = this.targets
     const r = this.rmsDb <= -99 ? '−∞' : this.rmsDb.toFixed(1).replace('-', '−')
     if (readout && r !== this.lastReadout) {
       readout.textContent = r
@@ -281,14 +291,7 @@ export class AudioEngine {
       status.style.color = ZONE_COLOR[zone]
       this.lastStatus = sKey
     }
-    const p = `peak ${this.holdDb <= -99 ? '−∞' : this.holdDb.toFixed(1).replace('-', '−')} dBFS`
-    if (peak && p !== this.lastPeak) {
-      peak.textContent = p
-      peak.style.color = this.holdDb > PEAK_RED_DB ? ZONE_COLOR.clip : ''
-      this.lastPeak = p
-    }
     if (meter) this.drawMeter(meter, zone)
-    if (history) this.drawHistory(history, t)
   }
 
   private fit(c: HTMLCanvasElement): CanvasRenderingContext2D {
@@ -320,8 +323,10 @@ export class AudioEngine {
     const W = c.clientWidth
     const H = c.clientHeight
     const y = (db: number) => H - ((Math.max(DB_MIN, Math.min(0, db)) - DB_MIN) / -DB_MIN) * H
-    const barX = 44
-    const barW = W - barX - 8
+    // Slim meters (focus screen) drop the scale and fill the canvas.
+    const slim = W < 60
+    const barX = slim ? 0 : 44
+    const barW = slim ? W : W - barX - 8
     g.clearRect(0, 0, W, H)
     for (const [a, b, col] of this.zoneBands()) {
       g.fillStyle = col
@@ -332,7 +337,8 @@ export class AudioEngine {
     // level bar
     g.fillStyle = ZONE_COLOR[zone]
     const top = y(this.rmsDb)
-    g.fillRect(barX + barW * 0.2, top, barW * 0.6, H - top)
+    if (slim) g.fillRect(barX, top, barW, H - top)
+    else g.fillRect(barX + barW * 0.2, top, barW * 0.6, H - top)
     // green-band outline so the target is always visible
     const [lo, hi] = this.band
     g.strokeStyle = ZONE_COLOR.good
@@ -341,6 +347,7 @@ export class AudioEngine {
     // peak-hold marker
     g.fillStyle = this.holdDb > PEAK_RED_DB ? ZONE_COLOR.clip : '#e6edf3'
     g.fillRect(barX, y(this.holdDb) - 2, barW, 4)
+    if (slim) return
     // scale
     g.fillStyle = '#8b949e'
     g.font = '12px ui-monospace, Menlo, monospace'
@@ -350,30 +357,5 @@ export class AudioEngine {
       g.fillText(String(db), barX - 8, Math.min(H - 7, Math.max(7, y(db))))
       g.fillRect(barX - 5, y(db), 4, 1)
     }
-  }
-
-  private drawHistory(c: HTMLCanvasElement, now: number) {
-    const g = this.fit(c)
-    const W = c.clientWidth
-    const H = c.clientHeight
-    const y = (db: number) => H - ((Math.max(DB_MIN, Math.min(0, db)) - DB_MIN) / -DB_MIN) * H
-    g.clearRect(0, 0, W, H)
-    const [lo, hi] = this.band
-    g.fillStyle = ZONE_COLOR.good
-    g.globalAlpha = 0.15
-    g.fillRect(0, y(hi), W, y(lo) - y(hi))
-    g.globalAlpha = 0.5
-    g.fillStyle = ZONE_COLOR.clip
-    g.fillRect(0, y(PEAK_RED_DB), W, 1)
-    g.globalAlpha = 1
-    g.strokeStyle = '#e6edf3'
-    g.lineWidth = 1.5
-    g.beginPath()
-    this.history.forEach((p, i) => {
-      const x = W - ((now - p.t) / HISTORY_MS) * W
-      if (i === 0) g.moveTo(x, y(p.db))
-      else g.lineTo(x, y(p.db))
-    })
-    g.stroke()
   }
 }

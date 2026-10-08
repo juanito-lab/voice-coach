@@ -1,6 +1,14 @@
-/** Lowercase and strip punctuation so script words and recognised words compare cleanly. */
+const NUMBER_WORDS: Record<string, string> = {
+  zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9',
+  ten: '10', eleven: '11', twelve: '12', thirteen: '13', fourteen: '14', fifteen: '15', sixteen: '16',
+  seventeen: '17', eighteen: '18', nineteen: '19', twenty: '20', thirty: '30', forty: '40', fifty: '50',
+  sixty: '60', seventy: '70', eighty: '80', ninety: '90', hundred: '100',
+}
+
+/** Lowercase, strip punctuation and map number words to digits so "Ten" and "10%" compare equal. */
 export function normalizeWord(w: string): string {
-  return w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+  const n = w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+  return NUMBER_WORDS[n] ?? n
 }
 
 export function tokenize(text: string): string[] {
@@ -21,31 +29,52 @@ function editDistance(a: string, b: string): number {
   return dp[b.length]
 }
 
+/** Exact for short words; fuzzy for longer ones ("damaged" ≈ "damage", "billed" ≈ "build"). */
 export function wordsMatch(script: string, heard: string): boolean {
   if (!script || !heard) return false
   if (script === heard) return true
-  if (script.length >= 4 && heard.length >= 4 && (script.startsWith(heard) || heard.startsWith(script))) return true
-  if (script.length > 3 && heard.length > 3) return editDistance(script, heard) <= 1
-  return false
+  const len = Math.max(script.length, heard.length)
+  if (Math.min(script.length, heard.length) < 4) return false
+  if (script.startsWith(heard) || heard.startsWith(script)) return true
+  return editDistance(script, heard) <= (len >= 6 ? Math.floor(len / 2) : 1)
 }
 
+/** Short words like "a", "to", "so" only match very close to the current position. */
+const SHORT_WINDOW = 3
+/** How far a confirmed two-word phrase may jump ahead (recovers from missed words). */
+const REANCHOR_WINDOW = 40
+
 /**
- * Walk the recognised words through the script, only ever moving forward and only
- * within `lookahead` words of the current position. Returns the index of the next
- * unspoken script word.
+ * Walk recognised words through the script, only ever moving forward. Returns the
+ * index of the next unspoken script word.
+ *
+ * - Each heard word matches the nearest script word within `lookahead` (3 for short words).
+ * - If that fails, two consecutive heard words that match two consecutive script words
+ *   up to 40 words ahead re-anchor the position, so missing the start of a take or
+ *   mangling a brand name never leaves the prompter stuck.
  */
-export function matchPosition(scriptWords: string[], startPos: number, heard: string[], lookahead = 8): number {
+export function matchPosition(scriptWords: string[], startPos: number, heard: string[], lookahead = 6): number {
+  const h = heard.map(normalizeWord).filter(Boolean)
   let pos = startPos
-  for (const raw of heard) {
-    const h = normalizeWord(raw)
-    if (!h) continue
-    const end = Math.min(scriptWords.length, pos + lookahead)
-    for (let j = pos; j < end; j++) {
-      if (wordsMatch(scriptWords[j], h)) {
-        pos = j + 1
+  for (let i = 0; i < h.length; i++) {
+    const word = h[i]
+    const window = word.length <= 3 ? SHORT_WINDOW : lookahead
+    let found = -1
+    for (let j = pos; j < Math.min(scriptWords.length, pos + window); j++) {
+      if (wordsMatch(scriptWords[j], word)) {
+        found = j
         break
       }
     }
+    if (found < 0 && i + 1 < h.length) {
+      for (let j = pos; j < Math.min(scriptWords.length - 1, pos + REANCHOR_WINDOW); j++) {
+        if (wordsMatch(scriptWords[j], word) && wordsMatch(scriptWords[j + 1], h[i + 1])) {
+          found = j
+          break
+        }
+      }
+    }
+    if (found >= 0) pos = found + 1
   }
   return pos
 }

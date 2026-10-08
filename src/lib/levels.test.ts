@@ -27,7 +27,8 @@ describe('zones (normal band)', () => {
     [-22, -15, 'approach', 'LOUDER'],
     [-16, -10, 'good', 'GOOD'],
     [-10, -7, 'hot', 'BACK OFF'],
-    [-16, -3, 'clip', 'BACK OFF'],
+    [-16, -2, 'clip', 'BACK OFF'],
+    [-16, -5, 'good', 'GOOD'],
   ] as const)('rms %i / peak %i → %s', (rms, peak, zone, word) => {
     const z = classify(rms, peak, b)
     expect(z).toBe(zone)
