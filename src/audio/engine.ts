@@ -12,6 +12,7 @@ import {
   statusWord,
   type Zone,
 } from '../lib/levels'
+import { analyzeTake, type TakeAnalysis } from '../lib/analysis'
 import { audioInputs, isPseudoDevice, matchDevice, type MicChoice } from '../lib/devices'
 import type { Frame } from '../lib/levelcheck'
 import type { Energy } from '../lib/types'
@@ -33,6 +34,14 @@ export interface TakeStats {
   greenPct: number
   avgDb: number
   clips: number
+}
+
+export interface Recording {
+  webm: Blob
+  stats: TakeStats
+  /** performance.now() when the recorder was started and stopped */
+  startedAt: number
+  stoppedAt: number
 }
 
 const SMOOTH_MS = 300
@@ -240,12 +249,14 @@ export class AudioEngine {
     this.recorder.start(250)
   }
 
-  stopRecording(): Promise<{ webm: Blob; stats: TakeStats }> {
+  stopRecording(): Promise<Recording> {
     const rec = this.recorder
     if (!rec) return Promise.reject(new Error('Not recording'))
+    const startedAt = this.recStart
+    const stoppedAt = performance.now()
     return new Promise((resolve) => {
       rec.onstop = () => {
-        const takeSec = (performance.now() - this.recStart) / 1000
+        const takeSec = (performance.now() - startedAt) / 1000
         const s = this.stats
         resolve({
           webm: new Blob(this.chunks, { type: rec.mimeType || 'audio/webm' }),
@@ -256,6 +267,8 @@ export class AudioEngine {
             avgDb: s.speaking ? powerToDb(s.powerSum / s.speaking) : -100,
             clips: s.clips,
           },
+          startedAt,
+          stoppedAt,
         })
         this.recorder = null
       }
@@ -263,11 +276,14 @@ export class AudioEngine {
     })
   }
 
-  /** Decode the recorded webm and re-encode it as 16-bit PCM WAV. */
-  async toWav(webm: Blob): Promise<Blob> {
+  /** Decode the recorded webm once: re-encode it as 16-bit PCM WAV and measure it (loudness, noise floor, speech). */
+  async decode(webm: Blob): Promise<{ wav: Blob; analysis: TakeAnalysis }> {
     const audio = await this.ctx!.decodeAudioData(await webm.arrayBuffer())
     const chans = Array.from({ length: audio.numberOfChannels }, (_, i) => audio.getChannelData(i))
-    return new Blob([encodeWav(chans, audio.sampleRate)], { type: 'audio/wav' })
+    return {
+      wav: new Blob([encodeWav(chans, audio.sampleRate)], { type: 'audio/wav' }),
+      analysis: analyzeTake(chans, audio.sampleRate),
+    }
   }
 
   dispose() {

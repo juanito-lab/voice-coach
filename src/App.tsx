@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AudioEngine, type SourceKind } from './audio/engine'
 import { SpeechTracker, speechAvailable } from './audio/speech'
 import { FocusView } from './components/FocusView'
-import { SetupView, type LevelPhase, type TakeResult } from './components/SetupView'
+import { SetupView, type LevelPhase } from './components/SetupView'
 import { deviceKey, micNeedsReopen, type MicChoice } from './lib/devices'
 import { directScript } from './lib/direct'
 import { computeLevelCheck, type LevelCheck } from './lib/levelcheck'
 import { buildSchedule } from './lib/prompter'
 import { load, save, type MicCal, type Saved } from './lib/storage'
 import { TakeTracker, type Live, type Mode } from './lib/take'
+import { takeFileBase, type Take } from './lib/takes'
 import { validateSegments } from './lib/types'
 
 const SAMPLE =
@@ -62,9 +63,14 @@ export default function App() {
   const [live, setLive] = useState<Live | null>(null)
   const [mode, setMode] = useState<Mode>('timed')
   const [elapsed, setElapsed] = useState(0)
-  const [take, setTake] = useState<TakeResult | null>(null)
+  // Every take of the session stays in memory (nothing is uploaded or persisted).
+  const [takes, setTakes] = useState<Take[]>([])
+  const [selectedTake, setSelectedTake] = useState<number | null>(null)
+  const takeCount = useRef(0)
   const tracker = useRef<TakeTracker | null>(null)
   const takeT0 = useRef(0)
+  const takeWall = useRef<Date | null>(null)
+  const takeScript = useRef('')
   const speechError = useRef('')
   const timers = useRef<number[]>([])
 
@@ -188,9 +194,12 @@ export default function App() {
   const startTake = useCallback(async () => {
     if (!segments.length) return
     if (!started && !(await setSource(source))) return
+    // A take playing back through the speakers would bleed into the new recording.
+    document.querySelectorAll('audio').forEach((a) => a.pause())
     const m: Mode = speechAvailable() ? 'speech' : 'timed'
     const t = new TakeTracker(segments, m)
     tracker.current = t
+    takeScript.current = script
     speechError.current = ''
     setMode(m)
     setLive(null)
@@ -217,12 +226,13 @@ export default function App() {
       window.setTimeout(() => {
         setCountdown(null)
         eng.startRecording()
+        takeWall.current = new Date()
         takeT0.current = performance.now()
         tracker.current?.start(takeT0.current)
         setPhase('recording')
       }, COUNTDOWN_STEP_MS * 3),
     ]
-  }, [segments, started, setSource, source, eng])
+  }, [segments, started, setSource, source, eng, script])
 
   const stopTake = useCallback(async () => {
     clearTimers()
@@ -236,41 +246,47 @@ export default function App() {
     setPhase('setup')
     eng.setBand('normal')
     const t = tracker.current!
-    const { webm, stats } = await eng.stopRecording()
+    const rec = await eng.stopRecording()
+    const { webm, stats } = rec
     const usedSpeech = t.mode === 'speech' && heardCount > 0
     // Only count words actually reached, so stopping early doesn't inflate the pace.
     const words = Math.round(t.followed * t.words.length)
     const minutes = (usedSpeech ? stats.speakingSec : stats.takeSec) / 60
     const lines = t.results()
     logTake({ source, mode: t.mode, speechError: speechError.current, heardCount, followed: t.followed, gainDb: eng.gainDb, noiseFloor: eng.noiseFloor, stats, lines })
-    const webmUrl = URL.createObjectURL(webm)
-    setTake((prev) => {
-      if (prev) {
-        URL.revokeObjectURL(prev.webmUrl)
-        if (prev.wavUrl) URL.revokeObjectURL(prev.wavUrl)
-      }
-      return {
-        webmUrl,
-        webmSize: webm.size,
-        wavUrl: null,
-        wavSize: 0,
-        stamp: new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'),
-        greenPct: stats.greenPct,
-        avgDb: stats.avgDb,
-        clips: stats.clips,
-        wpm: minutes > 0 ? words / minutes : 0,
-        wpmMethod: usedSpeech ? 'speech' : 'script',
-        followed: t.followed,
-        lines,
-      }
-    })
-    // WAV conversion can take a moment on long takes; show the review first, add the link after.
+    const n = ++takeCount.current
+    const recordedAt = takeWall.current ?? new Date()
+    const take: Take = {
+      n,
+      recordedAt,
+      base: takeFileBase(recordedAt, n),
+      webmUrl: URL.createObjectURL(webm),
+      webmSize: webm.size,
+      wavUrl: null,
+      wavSize: 0,
+      durationSec: stats.takeSec,
+      greenPct: stats.greenPct,
+      avgDb: stats.avgDb,
+      clips: stats.clips,
+      wpm: minutes > 0 ? words / minutes : 0,
+      wpmMethod: usedSpeech ? 'speech' : 'script',
+      followed: t.followed,
+      lines,
+      script: takeScript.current,
+      segments: t.segments,
+      mode: t.mode,
+      status: 'measuring',
+      analysis: null,
+    }
+    setTakes((prev) => [...prev, take])
+    setSelectedTake(n)
+    const update = (patch: Partial<Take>) => setTakes((prev) => prev.map((x) => (x.n === n ? { ...x, ...patch } : x)))
+    // Decoding and measuring can take a moment on long takes; show the take first, add the numbers after.
     try {
-      const wav = await eng.toWav(webm)
-      const wavUrl = URL.createObjectURL(wav)
-      setTake((cur) => (cur && cur.webmUrl === webmUrl ? { ...cur, wavUrl, wavSize: wav.size } : cur))
+      const { wav, analysis } = await eng.decode(webm)
+      update({ wavUrl: URL.createObjectURL(wav), wavSize: wav.size, durationSec: analysis.durationSec, analysis, status: 'ready' })
     } catch {
-      /* decoding failed: webm only */
+      update({ status: 'failed' }) // decoding failed: webm only
     }
   }, [phase, eng, source])
 
@@ -353,7 +369,9 @@ export default function App() {
       notice={notice}
       onClaude={refineWithClaude}
       onStart={startTake}
-      take={take}
+      takes={takes}
+      selectedTake={selectedTake}
+      onSelectTake={setSelectedTake}
     />
   )
 }

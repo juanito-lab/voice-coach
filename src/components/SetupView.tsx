@@ -6,21 +6,8 @@ import { cleanToken } from '../lib/markup'
 import { segmentWords } from '../lib/prompter'
 import type { LineResult } from '../lib/take'
 import { PACE_WPM, type Segment } from '../lib/types'
-
-export interface TakeResult {
-  webmUrl: string
-  webmSize: number
-  wavUrl: string | null
-  wavSize: number
-  stamp: string
-  greenPct: number
-  avgDb: number
-  clips: number
-  wpm: number
-  wpmMethod: 'speech' | 'script'
-  followed: number
-  lines: LineResult[]
-}
+import type { Take } from '../lib/takes'
+import { TakesPanel } from './TakesPanel'
 
 export type LevelPhase = 'idle' | 'quiet' | 'speak' | 'done'
 
@@ -47,11 +34,13 @@ interface Props {
   notice: string | null
   onClaude: () => void
   onStart: () => void
-  take: TakeResult | null
+  takes: Take[]
+  selectedTake: number | null
+  onSelectTake: (n: number) => void
 }
 
 const fmtDb = (db: number) => (db <= -99 ? '−∞' : db.toFixed(0).replace('-', '−'))
-const fmtSize = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1e3)} kB`)
+const sameLines = (a: Segment[], b: Segment[]) => a.length === b.length && a.every((s, i) => s.text === b[i].text)
 
 export function SetupView(p: Props) {
   const meter = useRef<HTMLCanvasElement>(null)
@@ -67,6 +56,9 @@ export function SetupView(p: Props) {
 
   const firstLine = p.segments[0]?.text ?? 'Testing, one, two, three — this is my voiceover level.'
   const checking = p.levelPhase === 'quiet' || p.levelPhase === 'speak'
+  const take = p.takes.find((t) => t.n === p.selectedTake) ?? p.takes[p.takes.length - 1] ?? null
+  // Per-line results only make sense while the script is the one the take was read from.
+  const results = take && sameLines(take.segments, p.segments) ? take.lines : null
 
   return (
     <div className="setup">
@@ -146,8 +138,8 @@ export function SetupView(p: Props) {
                     </div>
                     {p.micGainDb === null && (
                       <div className="hint">
-                        {p.activeMic ? 'No level check for this mic yet, so its gain is 0 dB. ' : ''}8 s. Sets this mic's gain so a normal read lands
-                        in the green.
+                        {p.activeMic ? 'No level check for this mic yet (gain 0 dB). ' : ''}Check level takes 8 s and sets this mic's gain so a normal
+                        read lands in the green.
                       </div>
                     )}
                   </>
@@ -179,10 +171,11 @@ export function SetupView(p: Props) {
         </aside>
 
         <main className="col-right">
-          {p.take ? <TakeCard take={p.take} /> : <Signals />}
+          {p.takes.length ? <TakesPanel takes={p.takes} selected={take?.n ?? null} onSelect={p.onSelectTake} /> : <Signals />}
+          {take && !results && <div className="hint">Script changed since take {take.n}; line results hidden.</div>}
           <ol className="lines" data-testid="lines">
             {p.segments.map((seg, i) => (
-              <LineRow key={i} seg={seg} result={p.take?.lines[i] ?? null} />
+              <LineRow key={i} seg={seg} result={results?.[i] ?? null} />
             ))}
           </ol>
         </main>
@@ -267,45 +260,6 @@ function Signals() {
         <span className="demo-meter" />
         The slim bar on the left is your level. Stay inside the green bracket.
       </div>
-    </div>
-  )
-}
-
-function TakeCard({ take }: { take: TakeResult }) {
-  return (
-    <div className="card takecard" data-testid="summary">
-      <div className="stats">
-        <div>
-          <b className={take.greenPct >= 70 ? 't-on' : 't-behind'}>{take.greenPct.toFixed(0)}%</b>
-          <span>in the green</span>
-        </div>
-        <div>
-          <b>{fmtDb(take.avgDb)}</b>
-          <span>avg dBFS</span>
-        </div>
-        <div>
-          <b className={take.clips ? 't-hot' : ''}>{take.clips}</b>
-          <span>clipped</span>
-        </div>
-        <div>
-          <b>{Math.round(take.wpm)}</b>
-          <span>wpm{take.wpmMethod === 'script' ? ' (est.)' : ''}</span>
-        </div>
-      </div>
-      <div className="take-actions">
-        <audio src={take.webmUrl} controls />
-        <a href={take.webmUrl} download={`voice-coach-${take.stamp}.webm`}>
-          .webm {fmtSize(take.webmSize)}
-        </a>
-        {take.wavUrl && (
-          <a href={take.wavUrl} download={`voice-coach-${take.stamp}.wav`}>
-            .wav {fmtSize(take.wavSize)}
-          </a>
-        )}
-      </div>
-      {take.followed < 0.9 && take.wpmMethod === 'speech' && (
-        <div className="warn">Voice tracking followed {Math.round(take.followed * 100)}% of the script.</div>
-      )}
     </div>
   )
 }
