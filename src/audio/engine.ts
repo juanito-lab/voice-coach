@@ -12,6 +12,7 @@ import {
   statusWord,
   type Zone,
 } from '../lib/levels'
+import { audioInputs, isPseudoDevice, matchDevice, type MicChoice } from '../lib/devices'
 import type { Frame } from '../lib/levelcheck'
 import type { Energy } from '../lib/types'
 import { encodeWav } from '../lib/wav'
@@ -48,20 +49,35 @@ const ZONE_COLOR: Record<Zone, string> = {
   clip: '#f85149',
 }
 
-
+/** Browser voice filters distort level readings, so the mic is always opened raw. */
 const RAW_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-/** Mic to use whenever it is plugged in; falls back to the system default. */
-const PREFERRED_MIC = /mvx2u|shure/i
 
-async function openPreferredMic(): Promise<MediaStream> {
-  // First call grants permission so device labels become readable.
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: RAW_AUDIO })
-  const devices = await navigator.mediaDevices.enumerateDevices()
-  const want = devices.find((d) => d.kind === 'audioinput' && PREFERRED_MIC.test(d.label))
-  const current = stream.getAudioTracks()[0]?.getSettings().deviceId
-  if (!want || want.deviceId === current) return stream
-  stream.getTracks().forEach((t) => t.stop())
-  return navigator.mediaDevices.getUserMedia({ audio: { ...RAW_AUDIO, deviceId: { exact: want.deviceId } } })
+/**
+ * Open the chosen mic, or the system default when `wanted` is null or not plugged in.
+ * Tries the saved device id first; if that fails (id changed, device gone) it opens the
+ * default — which also grants permission so labels are readable — and looks the device up by label.
+ */
+async function openMic(wanted: MicChoice | null): Promise<MediaStream> {
+  const md = navigator.mediaDevices
+  const exact = (deviceId: string) => md.getUserMedia({ audio: { ...RAW_AUDIO, deviceId: { exact: deviceId } } })
+  if (wanted?.deviceId && !isPseudoDevice(wanted.deviceId)) {
+    try {
+      return await exact(wanted.deviceId)
+    } catch {
+      /* fall through: find it by label */
+    }
+  }
+  const stream = await md.getUserMedia({ audio: RAW_AUDIO })
+  if (!wanted) return stream
+  const match = matchDevice(audioInputs(await md.enumerateDevices()), wanted)
+  if (!match || match.deviceId === stream.getAudioTracks()[0]?.getSettings().deviceId) return stream
+  try {
+    const s = await exact(match.deviceId)
+    stream.getTracks().forEach((t) => t.stop())
+    return s
+  } catch {
+    return stream
+  }
 }
 
 export class AudioEngine {
@@ -121,13 +137,13 @@ export class AudioEngine {
   }
 
   /** Switch the input. Every source feeds the same analyser and recorder path. */
-  async setSource(kind: SourceKind, file?: File): Promise<void> {
+  async setSource(kind: SourceKind, file?: File, mic: MicChoice | null = null): Promise<void> {
     await this.init()
     const ctx = this.ctx!
     this.disconnectSource()
     let node: AudioNode
     if (kind === 'mic') {
-      this.micStream = await openPreferredMic()
+      this.micStream = await openMic(mic)
       node = ctx.createMediaStreamSource(this.micStream)
     } else if (kind === 'file') {
       if (!file) throw new Error('No file selected')
@@ -156,6 +172,17 @@ export class AudioEngine {
     this.sourceNode = null
     this.micStream?.getTracks().forEach((t) => t.stop())
     this.micStream = null
+  }
+
+  /** The mic that is open right now (null for test sources). */
+  get micDevice(): { deviceId: string; label: string } | null {
+    const track = this.micStream?.getAudioTracks()[0]
+    return track ? { deviceId: track.getSettings().deviceId ?? '', label: track.label } : null
+  }
+
+  /** False once the open mic's track has ended, e.g. because it was unplugged. */
+  get micLive(): boolean {
+    return this.micStream?.getAudioTracks()[0]?.readyState === 'live'
   }
 
   setNoiseFloor(db: number | null) {

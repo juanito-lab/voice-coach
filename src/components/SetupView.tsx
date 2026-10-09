@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { AudioEngine, SourceKind } from '../audio/engine'
+import { audioInputs, cleanLabel, defaultInputLabel, labelsVisible, matchDevice, type DeviceLike, type MicChoice } from '../lib/devices'
 import type { LevelCheck } from '../lib/levelcheck'
 import { cleanToken } from '../lib/markup'
 import { segmentWords } from '../lib/prompter'
@@ -30,6 +31,10 @@ interface Props {
   segments: Segment[]
   source: SourceKind
   onSource: (k: SourceKind, f?: File) => void
+  devices: DeviceLike[]
+  micChoice: MicChoice | null
+  activeMic: { deviceId: string; label: string } | null
+  onMicChoice: (c: MicChoice | null) => void
   started: boolean
   error: string | null
   levelPhase: LevelPhase
@@ -61,6 +66,7 @@ export function SetupView(p: Props) {
   }, [engine])
 
   const firstLine = p.segments[0]?.text ?? 'Testing, one, two, three — this is my voiceover level.'
+  const checking = p.levelPhase === 'quiet' || p.levelPhase === 'speak'
 
   return (
     <div className="setup">
@@ -100,6 +106,9 @@ export function SetupView(p: Props) {
       <div className="setup-grid">
         <aside className="col-left">
           <section className="card level">
+            {p.source === 'mic' && (
+              <MicPicker devices={p.devices} choice={p.micChoice} active={p.activeMic} disabled={checking} onChoice={p.onMicChoice} />
+            )}
             <div className="level-row">
               <canvas ref={meter} className="meter" aria-label="Level meter" />
               <div className="level-read">
@@ -135,7 +144,12 @@ export function SetupView(p: Props) {
                       <button onClick={p.onCheckLevel}>{p.micGainDb === null ? 'Check level' : 'Re-check level'}</button>
                       {p.micGainDb !== null && <span className="chip">mic gain +{p.micGainDb} dB</span>}
                     </div>
-                    {p.micGainDb === null && <div className="hint">8 s. Sets your mic so a normal read lands in the green.</div>}
+                    {p.micGainDb === null && (
+                      <div className="hint">
+                        {p.activeMic ? 'No level check for this mic yet, so its gain is 0 dB. ' : ''}8 s. Sets this mic's gain so a normal read lands
+                        in the green.
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -174,6 +188,56 @@ export function SetupView(p: Props) {
         </main>
       </div>
     </div>
+  )
+}
+
+const NOT_CONNECTED = '__not-connected__'
+
+function MicPicker(props: {
+  devices: DeviceLike[]
+  choice: MicChoice | null
+  active: { deviceId: string; label: string } | null
+  disabled: boolean
+  onChoice: (c: MicChoice | null) => void
+}) {
+  const { devices, choice, active } = props
+  const inputs = audioInputs(devices)
+  const present = matchDevice(inputs, choice)
+  const missing = choice !== null && present === null
+  // Chrome names the OS default; elsewhere fall back to the mic that is open.
+  const defName = defaultInputLabel(devices) ?? (choice === null && active ? cleanLabel(active.label) : null)
+  return (
+    <>
+      <div className="mic-row">
+        <label htmlFor="mic-device">Mic</label>
+        <select
+          id="mic-device"
+          value={present ? present.deviceId : missing ? NOT_CONNECTED : ''}
+          disabled={props.disabled}
+          onChange={(e) => {
+            const d = inputs.find((x) => x.deviceId === e.target.value)
+            props.onChoice(d ? { deviceId: d.deviceId, label: cleanLabel(d.label) } : null)
+          }}
+        >
+          <option value="">System default{defName ? ` · ${defName}` : ''}</option>
+          {inputs.map((d, i) => (
+            <option key={d.deviceId} value={d.deviceId}>
+              {cleanLabel(d.label) || `Microphone ${i + 1}`}
+            </option>
+          ))}
+          {missing && (
+            <option value={NOT_CONNECTED} disabled>
+              {choice.label || 'Saved mic'} (not connected)
+            </option>
+          )}
+        </select>
+      </div>
+      {missing ? (
+        <div className="hint mic-hint">{choice.label || 'Your saved mic'} isn't connected. Using the system default until you plug it in.</div>
+      ) : (
+        !labelsVisible(devices) && <div className="hint mic-hint">Turn on the input to list your mics by name.</div>
+      )}
+    </>
   )
 }
 

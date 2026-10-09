@@ -3,15 +3,13 @@ import { AudioEngine, type SourceKind } from './audio/engine'
 import { SpeechTracker, speechAvailable } from './audio/speech'
 import { FocusView } from './components/FocusView'
 import { SetupView, type LevelPhase, type TakeResult } from './components/SetupView'
+import { deviceKey, micNeedsReopen, type MicChoice } from './lib/devices'
 import { directScript } from './lib/direct'
 import { computeLevelCheck, type LevelCheck } from './lib/levelcheck'
 import { buildSchedule } from './lib/prompter'
-import { load, save, type Saved } from './lib/storage'
+import { load, save, type MicCal, type Saved } from './lib/storage'
 import { TakeTracker, type Live, type Mode } from './lib/take'
 import { validateSegments } from './lib/types'
-
-/** Shure MVX2U reads ~-32 dBFS on a normal read; this lifts it into the green until a level check runs. */
-const DEFAULT_MIC_GAIN_DB = 18
 
 const SAMPLE =
   "Every rental car is driven by a stranger. 10% come back damaged. Only 3% get billed. So who pays? You do. MantAI listens to the car so you don't have to guess."
@@ -30,11 +28,7 @@ function logTake(data: unknown) {
 const saved = load()
 
 export default function App() {
-  const [eng] = useState(() => {
-    const e = new AudioEngine()
-    e.setNoiseFloor(saved?.noiseFloor ?? null)
-    return e
-  })
+  const [eng] = useState(() => new AudioEngine())
   const speech = useRef(new SpeechTracker())
 
   // Script + direction: heuristics follow every edit; Claude's direction sticks until the script changes.
@@ -50,9 +44,17 @@ export default function App() {
   const [started, setStarted] = useState(false)
   const [source, setSourceKind] = useState<SourceKind>('mic')
   const [audioError, setAudioError] = useState<string | null>(null)
-  const [micGainDb, setMicGainDb] = useState<number | null>(saved?.micGainDb ?? DEFAULT_MIC_GAIN_DB)
   const [levelPhase, setLevelPhase] = useState<LevelPhase>('idle')
   const [levelResult, setLevelResult] = useState<LevelCheck | null>(null)
+  const checking = levelPhase === 'quiet' || levelPhase === 'speak'
+
+  // Mic: the device the user picked (null = system default), what is open now, and level-check results per mic.
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
+  const [micChoice, setMicChoice] = useState<MicChoice | null>(saved?.mic ?? null)
+  const [activeMic, setActiveMic] = useState<{ deviceId: string; label: string } | null>(null)
+  const [micCal, setMicCal] = useState<Record<string, MicCal>>(saved?.micCal ?? {})
+  const activeCal = activeMic ? (micCal[deviceKey(activeMic)] ?? null) : null
+  const micGainDb = activeCal?.gainDb ?? null
 
   // Take
   const [phase, setPhase] = useState<Phase>('setup')
@@ -68,7 +70,7 @@ export default function App() {
 
   const firstWord = useMemo(() => buildSchedule(segments).segFirstWord, [segments])
 
-  useEffect(() => save({ script, claude, micGainDb, noiseFloor: eng.noiseFloor }), [script, claude, micGainDb, eng, levelResult])
+  useEffect(() => save({ script, claude, mic: micChoice, micCal }), [script, claude, micChoice, micCal])
 
   useEffect(() => {
     fetch('/api/direct')
@@ -94,26 +96,74 @@ export default function App() {
     }
   }
 
+  const refreshDevices = useCallback(async (): Promise<MediaDeviceInfo[]> => {
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices()
+      setDevices(list)
+      return list
+    } catch {
+      return []
+    }
+  }, [])
+
+  const opening = useRef(false)
   const setSource = useCallback(
-    async (kind: SourceKind, file?: File): Promise<boolean> => {
+    async (kind: SourceKind, file?: File, mic: MicChoice | null = micChoice): Promise<boolean> => {
       setAudioError(null)
+      opening.current = true
+      const before = eng.micDevice
       try {
-        await eng.setSource(kind, file)
-        // Mic gain comes from the level check; test sources stay at unity so their levels read true.
-        eng.setGainDb(kind === 'mic' ? (micGainDb ?? DEFAULT_MIC_GAIN_DB) : 0)
+        await eng.setSource(kind, file, mic)
+        // Gain comes from this mic's own level check (0 dB until it has one); test sources stay at unity so their levels read true.
+        const dev = kind === 'mic' ? eng.micDevice : null
+        const cal = dev ? micCal[deviceKey(dev)] : undefined
+        eng.setGainDb(cal?.gainDb ?? 0)
+        eng.setNoiseFloor(cal?.noiseFloor ?? null)
+        if (!dev || !before || deviceKey(dev) !== deviceKey(before)) {
+          setLevelResult(null)
+          setLevelPhase('idle')
+        }
+        setActiveMic(dev)
         setSourceKind(kind)
         setStarted(true)
+        if (kind === 'mic') void refreshDevices() // labels become readable once permission is granted
         return true
       } catch (err) {
         setAudioError(`Input failed: ${err instanceof Error ? err.message : err}`)
         return false
+      } finally {
+        opening.current = false
       }
     },
-    [eng, micGainDb],
+    [eng, micChoice, micCal, refreshDevices],
   )
+
+  const chooseMic = (choice: MicChoice | null) => {
+    setMicChoice(choice)
+    if (started && source === 'mic') void setSource('mic', undefined, choice)
+  }
+
+  // Follow plugging and unplugging: back to the chosen mic when it returns, to the system default
+  // when the open mic disappears. Never switches during a take or a level check.
+  const latest = useRef({ started, source, phase: 'setup' as string, checking, micChoice, setSource })
+  useEffect(() => {
+    const md = navigator.mediaDevices
+    if (!md?.enumerateDevices) return
+    md.enumerateDevices().then(setDevices, () => {})
+    const onChange = async () => {
+      const list = await refreshDevices()
+      const s = latest.current
+      if (!s.started || s.source !== 'mic' || s.phase !== 'setup' || s.checking || eng.recording || opening.current) return
+      if (micNeedsReopen(list, s.micChoice, eng.micDevice, eng.micLive)) void s.setSource('mic')
+    }
+    md.addEventListener('devicechange', onChange)
+    return () => md.removeEventListener('devicechange', onChange)
+  }, [eng, refreshDevices])
 
   const checkLevel = async () => {
     if (source !== 'mic' || !(await setSource('mic'))) return
+    const dev = eng.micDevice
+    const prevGain = eng.gainDb
     eng.setGainDb(0)
     setLevelResult(null)
     setLevelPhase('quiet')
@@ -123,9 +173,9 @@ export default function App() {
     const res = computeLevelCheck(quiet, spoken)
     if (res.ok) {
       eng.setNoiseFloor(res.floorDb)
-      setMicGainDb(res.gainDb)
+      if (dev) setMicCal((m) => ({ ...m, [deviceKey(dev)]: { gainDb: res.gainDb, noiseFloor: res.floorDb } }))
     }
-    eng.setGainDb(res.ok ? res.gainDb : (micGainDb ?? 0))
+    eng.setGainDb(res.ok ? res.gainDb : prevGain)
     setLevelResult(res)
     setLevelPhase('done')
   }
@@ -271,6 +321,10 @@ export default function App() {
     }
   }, [phase, startTake, stopTake])
 
+  useEffect(() => {
+    latest.current = { started, source, phase, checking, micChoice, setSource }
+  })
+
   if (phase !== 'setup') {
     return <FocusView engine={eng} segments={segments} firstWord={firstWord} live={live} countdown={countdown} mode={mode} elapsedMs={elapsed} />
   }
@@ -283,6 +337,10 @@ export default function App() {
       segments={segments}
       source={source}
       onSource={setSource}
+      devices={devices}
+      micChoice={micChoice}
+      activeMic={activeMic}
+      onMicChoice={chooseMic}
       started={started}
       error={audioError}
       levelPhase={levelPhase}

@@ -46,6 +46,10 @@ code, kbd { font-family: ui-monospace, Menlo, monospace; font-size: .8em; backgr
 .col-right { display: flex; flex-direction: column; gap: 14px; padding: 18px 26px; overflow-y: auto; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
 
+.mic-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.mic-row label { color: var(--muted); font-size: .82rem; }
+.mic-row select { flex: 1; min-width: 0; text-overflow: ellipsis; }
+.mic-hint { margin: -6px 0 12px; }
 .level-row { display: flex; gap: 16px; height: 210px; }
 .meter { width: 96px; height: 100%; display: block; }
 .level-read { display: flex; flex-direction: column; justify-content: center; gap: 4px; }
