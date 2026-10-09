@@ -10,6 +10,9 @@ import { load, save, type Saved } from './lib/storage'
 import { TakeTracker, type Live, type Mode } from './lib/take'
 import { validateSegments } from './lib/types'
 
+/** Shure MVX2U reads ~-32 dBFS on a normal read; this lifts it into the green until a level check runs. */
+const DEFAULT_MIC_GAIN_DB = 18
+
 const SAMPLE =
   "Every rental car is driven by a stranger. 10% come back damaged. Only 3% get billed. So who pays? You do. MantAI listens to the car so you don't have to guess."
 
@@ -47,7 +50,7 @@ export default function App() {
   const [started, setStarted] = useState(false)
   const [source, setSourceKind] = useState<SourceKind>('mic')
   const [audioError, setAudioError] = useState<string | null>(null)
-  const [micGainDb, setMicGainDb] = useState<number | null>(saved?.micGainDb ?? null)
+  const [micGainDb, setMicGainDb] = useState<number | null>(saved?.micGainDb ?? DEFAULT_MIC_GAIN_DB)
   const [levelPhase, setLevelPhase] = useState<LevelPhase>('idle')
   const [levelResult, setLevelResult] = useState<LevelCheck | null>(null)
 
@@ -97,7 +100,7 @@ export default function App() {
       try {
         await eng.setSource(kind, file)
         // Mic gain comes from the level check; test sources stay at unity so their levels read true.
-        eng.setGainDb(kind === 'mic' ? (micGainDb ?? 0) : 0)
+        eng.setGainDb(kind === 'mic' ? (micGainDb ?? DEFAULT_MIC_GAIN_DB) : 0)
         setSourceKind(kind)
         setStarted(true)
         return true

@@ -48,6 +48,22 @@ const ZONE_COLOR: Record<Zone, string> = {
   clip: '#f85149',
 }
 
+
+const RAW_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+/** Mic to use whenever it is plugged in; falls back to the system default. */
+const PREFERRED_MIC = /mvx2u|shure/i
+
+async function openPreferredMic(): Promise<MediaStream> {
+  // First call grants permission so device labels become readable.
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: RAW_AUDIO })
+  const devices = await navigator.mediaDevices.enumerateDevices()
+  const want = devices.find((d) => d.kind === 'audioinput' && PREFERRED_MIC.test(d.label))
+  const current = stream.getAudioTracks()[0]?.getSettings().deviceId
+  if (!want || want.deviceId === current) return stream
+  stream.getTracks().forEach((t) => t.stop())
+  return navigator.mediaDevices.getUserMedia({ audio: { ...RAW_AUDIO, deviceId: { exact: want.deviceId } } })
+}
+
 export class AudioEngine {
   ctx: AudioContext | null = null
   targets: MeterTargets = {}
@@ -111,9 +127,7 @@ export class AudioEngine {
     this.disconnectSource()
     let node: AudioNode
     if (kind === 'mic') {
-      this.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      })
+      this.micStream = await openPreferredMic()
       node = ctx.createMediaStreamSource(this.micStream)
     } else if (kind === 'file') {
       if (!file) throw new Error('No file selected')
