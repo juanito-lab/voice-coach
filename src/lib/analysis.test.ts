@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { analyzeTake, frameLevels, mixDown, noiseFloorDb, recorderOffsetSec, speechRegions, speechThreshold } from './analysis'
+import { analyzeTake, frameLevels, mixDown, noiseFloorDb, speechRegions, speechThreshold } from './analysis'
 
 const SR = 16000
 /** Deterministic white-ish noise at a given RMS dBFS. */
@@ -85,15 +85,16 @@ describe('analyzeTake', () => {
     expect(a.lufs).not.toBeNull()
     expect(a.regions).toHaveLength(1)
   })
-  it('mixDown averages channels', () => {
-    expect(Array.from(mixDown([new Float32Array([1, 0]), new Float32Array([0, 1])]))).toEqual([0.5, 0.5])
+  it('stereo loudness: identical channels read 3 dB above the same audio as mono, true stereo is measured per channel', () => {
+    const x = take(4, [[0.5, 3.5]], -58, -20)
+    const mono = analyzeTake([x], SR).lufs!
+    expect(analyzeTake([x, x], SR).lufs! - mono).toBeCloseTo(3.01, 1)
+    const quieter = x.map((v) => v / 2)
+    expect(analyzeTake([x, quieter], SR).lufs!).toBeCloseTo(mono + 10 * Math.log10(1 + 0.25), 1)
   })
-})
-
-describe('recorderOffsetSec', () => {
-  it('is the start-up delay of the recorder, clamped', () => {
-    expect(recorderOffsetSec(41.38, 41.3)).toBeCloseTo(0.08, 5)
-    expect(recorderOffsetSec(41.3, 41.4)).toBe(0)
-    expect(recorderOffsetSec(45, 41)).toBe(0.25)
+  it('mixDown averages channels, and passes identical ones through', () => {
+    expect(Array.from(mixDown([new Float32Array([1, 0]), new Float32Array([0, 1])]))).toEqual([0.5, 0.5])
+    const a = new Float32Array([0.1, 0.2])
+    expect(mixDown([a, a.slice()])).toBe(a)
   })
 })

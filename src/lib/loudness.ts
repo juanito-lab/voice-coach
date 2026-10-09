@@ -42,13 +42,14 @@ export function kWeightingFilters(sampleRate: number): [Biquad, Biquad] {
 
 /** Run a biquad over `x` (direct form I). Writes into `out`, which may be `x` itself. */
 export function applyBiquad(x: Float32Array, f: Biquad, out: Float32Array = new Float32Array(x.length)): Float32Array {
+  const { b0, b1, b2, a1, a2 } = f
   let x1 = 0
   let x2 = 0
   let y1 = 0
   let y2 = 0
   for (let i = 0; i < x.length; i++) {
     const xi = x[i]
-    const yi = f.b0 * xi + f.b1 * x1 + f.b2 * x2 - f.a1 * y1 - f.a2 * y2
+    const yi = b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
     x2 = x1
     x1 = xi
     y2 = y1
@@ -65,6 +66,14 @@ export function kWeight(x: Float32Array, sampleRate: number): Float32Array {
   return applyBiquad(y, hp, y)
 }
 
+/** True when two channels hold the same samples (browsers record a mono mic as identical L/R). */
+export function sameSamples(a: Float32Array, b: Float32Array): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
 const ABSOLUTE_GATE_LUFS = -70
 const RELATIVE_GATE_LU = -10
 const loudnessOf = (power: number) => -0.691 + 10 * Math.log10(power)
@@ -74,18 +83,32 @@ const loudnessOf = (power: number) => -0.691 + 10 * Math.log10(power)
  * (silence, or shorter than one 400 ms block).
  */
 export function integratedLoudness(channels: Float32Array[], sampleRate: number): number | null {
-  const n = channels[0]?.length ?? 0
+  // Identical channels are filtered once and counted twice (same result, half the work).
+  const unique: { ch: Float32Array; weight: number }[] = []
+  for (const ch of channels) {
+    const twin = unique.find((u) => sameSamples(u.ch, ch))
+    if (twin) twin.weight++
+    else unique.push({ ch, weight: 1 })
+  }
+  return gatedLoudness(
+    unique.map(({ ch, weight }) => ({ y: kWeight(ch, sampleRate), weight })),
+    sampleRate,
+  )
+}
+
+/** The gating part of BS.1770, over channels that are already K-weighted. */
+export function gatedLoudness(kChannels: { y: Float32Array; weight: number }[], sampleRate: number): number | null {
+  const n = kChannels[0]?.y.length ?? 0
   // 100 ms steps; a 400 ms block is 4 steps, so stepping one step gives the 75 % overlap.
   const step = Math.round(sampleRate * 0.1)
   const steps = step > 0 ? Math.floor(n / step) : 0
   if (steps < 4) return null
   const stepEnergy = new Float64Array(steps)
-  for (const ch of channels) {
-    const y = kWeight(ch, sampleRate)
+  for (const { y, weight } of kChannels) {
     for (let s = 0; s < steps; s++) {
       let acc = 0
       for (let i = s * step, end = i + step; i < end; i++) acc += y[i] * y[i]
-      stepEnergy[s] += acc
+      stepEnergy[s] += weight * acc
     }
   }
   const blocks: number[] = []

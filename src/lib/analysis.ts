@@ -1,4 +1,4 @@
-import { integratedLoudness, kWeight } from './loudness'
+import { gatedLoudness, integratedLoudness, kWeight, sameSamples } from './loudness'
 
 /** A stretch of the take in seconds: [start, end]. */
 export type Span = [number, number]
@@ -18,7 +18,7 @@ const DB_FLOOR = -100
 
 /** Average the channels into one. */
 export function mixDown(channels: Float32Array[]): Float32Array {
-  if (channels.length === 1) return channels[0]
+  if (channels.every((c) => sameSamples(c, channels[0]))) return channels[0]
   const n = channels[0]?.length ?? 0
   const out = new Float32Array(n)
   for (const ch of channels) for (let i = 0; i < n; i++) out[i] += ch[i] / channels.length
@@ -118,22 +118,16 @@ const round3 = (x: number) => Math.round(x * 1000) / 1000
 /** Everything the takes list and the timing export need, from the decoded recording. */
 export function analyzeTake(channels: Float32Array[], sampleRate: number): TakeAnalysis {
   const mono = mixDown(channels)
+  const kMono = kWeight(mono, sampleRate)
   const hop = 0.01
+  // A mono mic recorded as identical channels: reuse the K-weighted mono signal for the loudness too.
+  const lufs = mono === channels[0] ? gatedLoudness([{ y: kMono, weight: channels.length }], sampleRate) : integratedLoudness(channels, sampleRate)
   return {
     durationSec: mono.length / sampleRate,
     sampleRate,
-    lufs: integratedLoudness(channels, sampleRate),
+    lufs,
     noiseFloorDb: noiseFloorDb(mono, sampleRate),
     // K-weighting removes rumble and lifts sibilants, so word edges like "s" and "f" count as speech.
-    regions: speechRegions(frameLevels(kWeight(mono, sampleRate), sampleRate, hop), hop),
+    regions: speechRegions(frameLevels(kMono, sampleRate, hop), hop),
   }
-}
-
-/**
- * MediaRecorder starts capturing a moment after start() is called. The wall-clock length of
- * the take minus the decoded length is that delay (clamped to 0–250 ms): audio time 0 is
- * `startedAt + offset` on the performance clock.
- */
-export function recorderOffsetSec(wallSec: number, decodedSec: number): number {
-  return Math.min(0.25, Math.max(0, wallSec - decodedSec))
 }
