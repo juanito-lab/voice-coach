@@ -67,6 +67,7 @@ export function SetupView(p: Props) {
         <select
           value={p.source}
           aria-label="Input"
+          disabled={checking}
           onChange={(e) => {
             const k = e.target.value as SourceKind
             if (k === 'file') fileInput.current?.click()
@@ -87,6 +88,7 @@ export function SetupView(p: Props) {
           onChange={(e) => {
             const f = e.target.files?.[0]
             if (f) p.onSource('file', f)
+            e.target.value = '' // so picking the same file again still fires
           }}
         />
         <div className="spacer" />

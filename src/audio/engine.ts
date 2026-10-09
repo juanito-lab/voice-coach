@@ -101,6 +101,8 @@ export class AudioEngine {
   private gain: GainNode | null = null
   private dest: MediaStreamAudioDestinationNode | null = null
   private sourceNode: AudioNode | null = null
+  /** stops a test tone or file so it doesn't keep running after switching away */
+  private stopSource: (() => void) | null = null
   private micStream: MediaStream | null = null
   private buf = new Float32Array(2048)
   private raf = 0
@@ -161,6 +163,7 @@ export class AudioEngine {
       src.buffer = audio
       src.loop = true
       src.start()
+      this.stopSource = () => src.stop()
       node = src
     } else {
       const db = kind === 'tone-30' ? -30 : kind === 'tone-16' ? -16 : -3
@@ -170,6 +173,7 @@ export class AudioEngine {
       gain.gain.value = sineAmpForRmsDb(db)
       osc.connect(gain)
       osc.start()
+      this.stopSource = () => osc.stop()
       node = gain
     }
     node.connect(this.gain!)
@@ -179,6 +183,8 @@ export class AudioEngine {
   private disconnectSource() {
     this.sourceNode?.disconnect()
     this.sourceNode = null
+    this.stopSource?.()
+    this.stopSource = null
     this.micStream?.getTracks().forEach((t) => t.stop())
     this.micStream = null
   }

@@ -356,8 +356,10 @@ export default function App() {
       if (e.code === 'Space') {
         e.preventDefault()
         if (e.repeat) return
-        if (phase === 'setup') void startTake()
-        else void stopTake()
+        // Not during a level check: it would record the check and change gain mid-take.
+        if (phase === 'setup') {
+          if (!checking) void startTake()
+        } else void stopTake()
       } else if (e.key === 'Escape' && phase !== 'setup') {
         void stopTake()
       } else if ((e.key === 'r' || e.key === 'R') && phase === 'recording') {
@@ -377,7 +379,7 @@ export default function App() {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
     }
-  }, [phase, startTake, stopTake])
+  }, [phase, checking, startTake, stopTake])
 
   useEffect(() => {
     latest.current = { started, source, phase, checking, micChoice, setSource }
