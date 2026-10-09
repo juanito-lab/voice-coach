@@ -1,7 +1,8 @@
 {
   "name": "voice-coach",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Local voiceover studio for short-form video: auto-directed script, one-line prompter that follows your voice, take picker with loudness (LUFS) and noise floor, and line timing export for editing pipelines.",
   "type": "module",
   "scripts": {
     "dev": "vite",
