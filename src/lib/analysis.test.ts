@@ -72,6 +72,8 @@ describe('speechRegions', () => {
     const lv = [...Array(50).fill(-60), ...Array(50).fill(-15)]
     expect(speechThreshold(lv)).toBeCloseTo(-45, 5)
     expect(speechThreshold(Array(100).fill(-50))).toBe(-44)
+    // a gated mic: digital silence between words must not drag the threshold into codec noise
+    expect(speechThreshold([...Array(50).fill(-100), ...Array(50).fill(-20)])).toBe(-70)
   })
 })
 

@@ -66,6 +66,8 @@ export class TakeTracker {
   private segStart: (number | null)[] = []
   private segDone: (number | null)[] = []
   private lines: LineAcc[] = []
+  /** clock time (ms) at which each script word was reached; null = not yet */
+  private reachAt: (number | null)[] = []
   private pace: PaceState = 'idle'
   private paceCandidate: PaceState = 'idle'
   private paceSince = 0
@@ -90,6 +92,7 @@ export class TakeTracker {
     this.segStart = this.segments.map(() => null)
     this.segDone = this.segments.map(() => null)
     this.lines = this.segments.map(() => ({ first: null, last: null, power: 0, frames: 0 }))
+    this.reachAt = this.words.map(() => null)
     this.pace = 'idle'
     this.paceCandidate = 'idle'
     this.lastAdvance = now
@@ -143,6 +146,7 @@ export class TakeTracker {
       const line = this.lines[s]
       line.first ??= now
       line.last = now
+      this.reachAt[w] = now
       if (w === this.segLast[s]) this.segDone[s] = now
       this.lastAdvance = now
     }
@@ -190,6 +194,15 @@ export class TakeTracker {
     }
 
     return { pos: p, cur, pacer, pace: this.pace, hold, done }
+  }
+
+  /**
+   * When each script word was reached (same clock as tick()), null if never. In speech mode this is
+   * when recognition delivered the word, so it trails the voice by a few hundred ms. After a restart (R)
+   * only the last pass counts.
+   */
+  wordTimes(): (number | null)[] {
+    return this.reachAt.slice()
   }
 
   /** How much of the script the tracker followed (0–1). */

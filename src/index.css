@@ -101,6 +101,7 @@ tr.best .take-n { border-color: #e3b34199; }
 .dl-wait { color: var(--dim); font-weight: 600; }
 button.icon { padding: 3px 0; width: 34px; font-size: .8rem; }
 .takes audio { width: 100%; height: 34px; }
+.timing-notes { margin: 0; padding-left: 18px; color: var(--muted); font-size: .8rem; display: flex; flex-direction: column; gap: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }

@@ -116,6 +116,20 @@ export function TakesPanel({ takes, selected, onSelect }: Props) {
                           wav
                         </span>
                       )}
+                      {t.timingUrl && t.linesUrl ? (
+                        <>
+                          <a href={t.timingUrl} download={`${t.base}.json`} title="Line and word times, chunks and stats (.json)" aria-label={`Download timing of take ${t.n} (.json)`}>
+                            timing
+                          </a>
+                          <a href={t.linesUrl} download={`${t.base}.lines.json`} title="Just the chunks: lines.json for voice_assemble.py" aria-label={`Download lines.json of take ${t.n}`}>
+                            lines
+                          </a>
+                        </>
+                      ) : (
+                        <span className="dl-wait" title="Measuring…">
+                          timing
+                        </span>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -136,6 +150,13 @@ export function TakesPanel({ takes, selected, onSelect }: Props) {
       />
       {sel.followed < 0.9 && sel.wpmMethod === 'speech' && (
         <div className="warn">Voice tracking followed {Math.round(sel.followed * 100)}% of the script.</div>
+      )}
+      {sel.timing && sel.timing.notes.length > 0 && (
+        <ul className="timing-notes" aria-label={`Timing notes for take ${sel.n}`}>
+          {sel.timing.notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
       )}
       {issues.length > 0 && !measuring && (
         <div className="warn">

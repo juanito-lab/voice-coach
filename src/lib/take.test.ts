@@ -85,6 +85,18 @@ describe('TakeTracker — speech mode', () => {
     expect(r[3].wpm).toBeNull() // "So who pays?" too short to judge
   })
 
+  it('records when each word was reached, in order; a restart clears them', () => {
+    const { t } = simulate(1)
+    const times = t.wordTimes()
+    expect(times).toHaveLength(t.words.length)
+    expect(times.every((x) => x !== null)).toBe(true)
+    for (let i = 1; i < times.length; i++) expect(times[i]!).toBeGreaterThanOrEqual(times[i - 1]!)
+    // recognition lag: the first word (said by ~1400 ms) arrives 400 ms later, on a 100 ms tick
+    expect(times[0]).toBe(1800)
+    t.start(99999)
+    expect(t.wordTimes().every((x) => x === null)).toBe(true)
+  })
+
   it('still follows to the end when recognition drops words', () => {
     const { t } = simulate(1, 400, ['Every', 'rental', 'billed.', 'MantAI'])
     expect(t.followed).toBe(1)

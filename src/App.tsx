@@ -10,6 +10,7 @@ import { buildSchedule } from './lib/prompter'
 import { load, save, type MicCal, type Saved } from './lib/storage'
 import { TakeTracker, type Live, type Mode } from './lib/take'
 import { takeFileBase, type Take } from './lib/takes'
+import { buildTiming, linesJson, prettyJson, type TimingInput } from './lib/timing'
 import { validateSegments } from './lib/types'
 
 const SAMPLE =
@@ -256,6 +257,11 @@ export default function App() {
     logTake({ source, mode: t.mode, speechError: speechError.current, heardCount, followed: t.followed, gainDb: eng.gainDb, noiseFloor: eng.noiseFloor, stats, lines })
     const n = ++takeCount.current
     const recordedAt = takeWall.current ?? new Date()
+    // Word times on the recording's own clock. Measured in Chromium: the recorded audio starts at
+    // MediaRecorder.start() (within ~10 ms), so the countdown and the earlier recognition start drop out
+    // by subtracting the recorder's start time; the few ms it comes up short are lost at the end.
+    const wordReach = t.wordTimes().map((x) => (x === null ? null : Math.max(0, (x - rec.startedAt) / 1000)))
+    const wallSec = (rec.stoppedAt - rec.startedAt) / 1000
     const take: Take = {
       n,
       recordedAt,
@@ -277,16 +283,52 @@ export default function App() {
       mode: t.mode,
       status: 'measuring',
       analysis: null,
+      timing: null,
+      timingUrl: null,
+      linesUrl: null,
     }
     setTakes((prev) => [...prev, take])
     setSelectedTake(n)
     const update = (patch: Partial<Take>) => setTakes((prev) => prev.map((x) => (x.n === n ? { ...x, ...patch } : x)))
+    const timingFor = (a: { durationSec: number; sampleRate: number | null; regions: TimingInput['regions']; lufs: number | null; floor: number | null }) => {
+      const timing = buildTiming({
+        take: n,
+        recordedAt,
+        durationSec: a.durationSec,
+        sampleRate: a.sampleRate,
+        script: take.script,
+        lines: take.segments.map((s) => s.text),
+        tracking: t.mode,
+        wordReach,
+        regions: a.regions,
+        stats: {
+          integratedLufs: a.lufs,
+          noiseFloorDb: a.floor,
+          greenPct: take.greenPct,
+          avgDb: take.avgDb,
+          clippedPeaks: take.clips,
+          wpm: take.wpm,
+          followedPct: take.followed * 100,
+        },
+      })
+      const json = (text: string) => URL.createObjectURL(new Blob([text], { type: 'application/json' }))
+      return { timing, timingUrl: json(prettyJson(timing) + '\n'), linesUrl: json(linesJson(timing)) }
+    }
     // Decoding and measuring can take a moment on long takes; show the take first, add the numbers after.
     try {
       const { wav, analysis } = await eng.decode(webm)
-      update({ wavUrl: URL.createObjectURL(wav), wavSize: wav.size, durationSec: analysis.durationSec, analysis, status: 'ready' })
+      const a = analysis
+      update({
+        wavUrl: URL.createObjectURL(wav),
+        wavSize: wav.size,
+        durationSec: a.durationSec,
+        analysis: a,
+        status: 'ready',
+        ...timingFor({ durationSec: a.durationSec, sampleRate: a.sampleRate, regions: a.regions, lufs: a.lufs, floor: a.noiseFloorDb }),
+      })
     } catch {
-      update({ status: 'failed' }) // decoding failed: webm only
+      // Decoding failed: webm only, and timing from recognition alone.
+      update({ status: 'failed', ...timingFor({ durationSec: wallSec, sampleRate: null, regions: null, lufs: null, floor: null }) })
     }
   }, [phase, eng, source])
 

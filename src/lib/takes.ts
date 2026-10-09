@@ -1,6 +1,7 @@
 /** The session's takes: picking the best one by numbers, and naming the downloads. */
 import type { TakeAnalysis } from './analysis'
 import type { LineResult, Mode } from './take'
+import type { TimingFile } from './timing'
 import type { Segment } from './types'
 
 
@@ -100,6 +101,10 @@ export interface Take {
   mode: Mode
   status: 'measuring' | 'ready' | 'failed'
   analysis: TakeAnalysis | null
+  /** line/word timing for the edit pipeline, built once the audio is measured */
+  timing: TimingFile | null
+  timingUrl: string | null
+  linesUrl: string | null
 }
 
 export function scoreOf(t: Take): TakeScore {

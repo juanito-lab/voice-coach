@@ -68,16 +68,20 @@ export function frameLevels(x: Float32Array, sampleRate: number, hopSec = 0.01):
   return out
 }
 
+/** Never call anything below this speech, even over digital silence (codec tails, dither). */
+const MIN_SPEECH_DB = -70
+
 /**
  * Speech/silence threshold from the take itself: a third of the way from the quiet frames
- * (10th percentile) to the loud ones (95th), but at least 6 and at most 18 dB above the quiet ones.
+ * (10th percentile) to the loud ones (95th), but at least 6 and at most 18 dB above the quiet ones,
+ * and never below −70 dB.
  */
 export function speechThreshold(levelsDb: ArrayLike<number>): number {
   const sorted = Float32Array.from(levelsDb).sort()
   if (!sorted.length) return 0
   const quiet = quantile(sorted, 0.1)
   const loud = quantile(sorted, 0.95)
-  return quiet + Math.min(18, Math.max(6, (loud - quiet) / 3))
+  return Math.max(MIN_SPEECH_DB, quiet + Math.min(18, Math.max(6, (loud - quiet) / 3)))
 }
 
 export interface RegionOptions {
